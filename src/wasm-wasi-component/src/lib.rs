@@ -76,19 +76,21 @@ unsafe extern "C" fn setup(
                 &mut bindings::nxt_string("filesystem"),
                 ptr::null_mut(),
             );
-            for i in 0..bindings::nxt_conf_object_members_count(dirs_ptr) {
-                let value = bindings::nxt_conf_get_array_element(
-                    dirs_ptr,
-                    i.try_into().unwrap(),
-                );
-                let mut s = bindings::nxt_string("");
-                bindings::nxt_conf_get_string(value, &mut s);
-                dirs.push(
-                    std::str::from_utf8(std::slice::from_raw_parts(
-                        s.start, s.length,
-                    ))?
-                    .to_string(),
-                );
+            if !dirs_ptr.is_null() {
+                for i in 0..bindings::nxt_conf_object_members_count(dirs_ptr) {
+                    let value = bindings::nxt_conf_get_array_element(
+                        dirs_ptr,
+                        i.try_into().unwrap(),
+                    );
+                    let mut s = bindings::nxt_string("");
+                    bindings::nxt_conf_get_string(value, &mut s);
+                    dirs.push(
+                        std::str::from_utf8(std::slice::from_raw_parts(
+                            s.start, s.length,
+                        ))?
+                        .to_string(),
+                    );
+                }
             }
         }
 
@@ -283,7 +285,7 @@ impl GlobalState {
         // by Wasmtime's `wasi-http` implementation using the Rust `http`
         // crate.
         let request = self.to_request_builder(&info)?;
-        let body = self.to_request_body(&mut info);
+        let body = self.to_request_body(&mut info)?;
         let request = request.body(body)?;
 
         let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -378,7 +380,7 @@ impl GlobalState {
     fn to_request_body(
         &self,
         info: &mut NxtRequestInfo,
-    ) -> BoxBody<Bytes, Error> {
+    ) -> Result<BoxBody<Bytes, Error>> {
         // TODO: should convert the body into a form of `Stream` to become an
         // async stream of frames. The return value can represent that here
         // but for now this slurps up the entire body into memory and puts it
@@ -386,11 +388,10 @@ impl GlobalState {
         let mut body =
             BytesMut::with_capacity(info.content_length().try_into().unwrap());
 
-        // TODO: can this perform a partial read?
         // TODO: how to make this async at the nxt level?
-        info.request_read(&mut body);
+        info.request_read(&mut body)?;
 
-        Full::new(body.freeze()).map_err(|e| match e {}).boxed()
+        Ok(Full::new(body.freeze()).map_err(|e| match e {}).boxed())
     }
 
     fn send_response<T>(
@@ -505,25 +506,48 @@ impl NxtRequestInfo {
         }
     }
 
-    fn request_read(&mut self, dst: &mut BytesMut) {
-        unsafe {
+    fn request_read(&mut self, dst: &mut BytesMut) -> Result<()> {
+        const MAX_READ_SIZE: usize = 32 * 1024 * 1024;
+
+        let total_bytes_read = unsafe {
             let rest = dst.spare_capacity_mut();
-            let mut total_bytes_read = 0;
-            loop {
+            let mut total_bytes_read = 0usize;
+
+            while total_bytes_read < rest.len() {
+                let remaining = rest.len() - total_bytes_read;
+                let read_size = remaining.min(MAX_READ_SIZE);
                 let amt = bindings::nxt_unit_request_read(
                     self.info,
                     rest.as_mut_ptr().wrapping_add(total_bytes_read).cast(),
-                    32 * 1024 * 1024,
+                    read_size,
                 );
-                total_bytes_read += amt as usize;
-                if total_bytes_read >= rest.len() {
-                    break;
+
+                if amt < 0 {
+                    bail!("nxt_unit_request_read() failed: {amt}");
                 }
+
+                let amt: usize = amt.try_into().unwrap();
+                if amt == 0 {
+                    bail!("nxt_unit_request_read() returned unexpected EOF");
+                }
+                if amt > remaining {
+                    bail!(
+                        "nxt_unit_request_read() returned {amt} bytes, but only \
+                         {remaining} bytes were requested"
+                    );
+                }
+
+                total_bytes_read += amt;
             }
-            // TODO: handle failure when `amt` is negative
-            let total_bytes_read: usize = total_bytes_read.try_into().unwrap();
+
+            total_bytes_read
+        };
+
+        unsafe {
             dst.set_len(dst.len() + total_bytes_read);
         }
+
+        Ok(())
     }
 
     fn response_write(&mut self, data: &[u8]) {
