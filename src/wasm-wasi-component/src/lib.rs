@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 use bytes::{Bytes, BytesMut};
+use http::header::{HeaderName, HeaderValue};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::Error;
@@ -11,8 +12,9 @@ use std::sync::OnceLock;
 use tokio::sync::mpsc;
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
-use wasmtime_wasi::p2::{WasiCtx, WasiCtxBuilder, WasiView, IoView,
-                        add_to_linker_async};
+use wasmtime_wasi::p2::{
+    add_to_linker_async, IoView, WasiCtx, WasiCtxBuilder, WasiView,
+};
 use wasmtime_wasi::{DirPerms, FilePerms};
 use wasmtime_wasi_http::bindings::http::types::{ErrorCode, Scheme};
 use wasmtime_wasi_http::bindings::ProxyPre;
@@ -24,7 +26,8 @@ use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpView};
     non_snake_case,
     dead_code,
     unknown_lints,
-    unnecessary_transmutes
+    unnecessary_transmutes,
+    clippy::all
 )]
 mod bindings {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
@@ -73,15 +76,13 @@ unsafe extern "C" fn setup(
         if !wasm_conf.access.is_null() {
             let dirs_ptr = bindings::nxt_conf_get_object_member(
                 wasm_conf.access,
-                &mut bindings::nxt_string("filesystem"),
+                &bindings::nxt_string("filesystem"),
                 ptr::null_mut(),
             );
             if !dirs_ptr.is_null() {
                 for i in 0..bindings::nxt_conf_object_members_count(dirs_ptr) {
-                    let value = bindings::nxt_conf_get_array_element(
-                        dirs_ptr,
-                        i.try_into().unwrap(),
-                    );
+                    let value =
+                        bindings::nxt_conf_get_array_element(dirs_ptr, i);
                     let mut s = bindings::nxt_string("");
                     bindings::nxt_conf_get_string(value, &mut s);
                     dirs.push(
@@ -111,7 +112,7 @@ unsafe extern "C" fn start(
 
     let result = handle_result(task, || {
         let config = GLOBAL_CONFIG.get().unwrap();
-        let state = GlobalState::new(&config)
+        let state = GlobalState::new(config)
             .context("failed to create initial state")?;
         let res = GLOBAL_STATE.set(state);
         assert!(res.is_ok());
@@ -163,7 +164,7 @@ unsafe fn handle_result(
         ((*log).handler).unwrap()(
             bindings::NXT_LOG_ALERT as bindings::nxt_uint_t,
             log,
-            "%s\0".as_ptr().cast(),
+            c"%s".as_ptr().cast(),
             msg.as_ptr(),
         );
     }
@@ -249,13 +250,24 @@ impl GlobalState {
             while let Some(msg) = receiver.recv().await {
                 let state = GLOBAL_STATE.get().unwrap();
                 tokio::task::spawn(async move {
-                    state.handle(msg).await.expect("failed to handle request")
+                    if let Err(e) = state.handle(msg).await {
+                        eprintln!("failed to handle request: {e:?}");
+                    }
                 });
             }
         });
     }
 
     async fn handle(&'static self, mut info: NxtRequestInfo) -> Result<()> {
+        let result = self.handle_impl(&mut info).await;
+        info.request_done();
+        result
+    }
+
+    async fn handle_impl(
+        &'static self,
+        info: &mut NxtRequestInfo,
+    ) -> Result<()> {
         // Create a "Store" which is the unit of per-request isolation in
         // Wasmtime.
         let data = StoreState {
@@ -284,8 +296,8 @@ impl GlobalState {
         // Convert the `nxt_*` representation into the representation required
         // by Wasmtime's `wasi-http` implementation using the Rust `http`
         // crate.
-        let request = self.to_request_builder(&info)?;
-        let body = self.to_request_body(&mut info)?;
+        let request = self.to_request_builder(info)?;
+        let body = self.to_request_body(info)?;
         let request = request.body(body)?;
 
         let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -319,27 +331,24 @@ impl GlobalState {
         let response = match receiver.await {
             Ok(response) => response.context("response generation failed")?,
             Err(_) => {
-                task.await.unwrap()?;
-                panic!("sender of response disappeared");
+                task.await.context("wasm task failed to join")??;
+                bail!("sender of response disappeared");
             }
         };
 
         // Send the headers/status which will extract the body for the next
         // phase.
-        let body = self.send_response(&mut info, response);
+        let body = self.send_response(info, response)?;
 
         // Send the body, a blocking operation, over time as it becomes
         // available.
-        self.send_response_body(&mut info, body)
+        self.send_response_body(info, body)
             .await
             .context("failed to write response body")?;
 
         // Join on completion of the wasm task which should be done by this
         // point.
-        task.await.unwrap()?;
-
-        // And finally signal that we're done.
-        info.request_done();
+        task.await.context("wasm task failed to join")??;
 
         Ok(())
     }
@@ -350,8 +359,8 @@ impl GlobalState {
     ) -> Result<http::request::Builder> {
         let mut request = http::Request::builder();
 
-        request = request.method(info.method());
-        request = match info.version() {
+        request = request.method(info.method()?);
+        request = match info.version()? {
             "HTTP/0.9" => request.version(http::Version::HTTP_09),
             "HTTP/1.0" => request.version(http::Version::HTTP_10),
             "HTTP/1.1" => request.version(http::Version::HTTP_11),
@@ -365,13 +374,17 @@ impl GlobalState {
 
         let uri = http::Uri::builder()
             .scheme(if info.tls() { "https" } else { "http" })
-            .authority(info.server_name())
-            .path_and_query(info.target())
+            .authority(info.server_name()?)
+            .path_and_query(info.target()?)
             .build()
             .context("failed to build URI")?;
         request = request.uri(uri);
 
-        for (name, value) in info.fields() {
+        for (name, value) in info.fields()? {
+            let name = HeaderName::from_bytes(name)
+                .context("invalid request header name")?;
+            let value = HeaderValue::from_bytes(value)
+                .context("invalid request header value")?;
             request = request.header(name, value);
         }
         Ok(request)
@@ -385,8 +398,11 @@ impl GlobalState {
         // async stream of frames. The return value can represent that here
         // but for now this slurps up the entire body into memory and puts it
         // all in a single `BytesMut` which is then converted to `Bytes`.
-        let mut body =
-            BytesMut::with_capacity(info.content_length().try_into().unwrap());
+        let content_length = info
+            .content_length()
+            .try_into()
+            .context("request body is too large")?;
+        let mut body = BytesMut::with_capacity(content_length);
 
         // TODO: how to make this async at the nxt level?
         info.request_read(&mut body)?;
@@ -398,24 +414,27 @@ impl GlobalState {
         &self,
         info: &mut NxtRequestInfo,
         response: http::Response<T>,
-    ) -> T {
-        info.init_response(
-            response.status().as_u16(),
-            response.headers().len().try_into().unwrap(),
-            response
-                .headers()
-                .iter()
-                .map(|(k, v)| k.as_str().len() + v.len())
-                .sum::<usize>()
-                .try_into()
-                .unwrap(),
-        );
-        for (k, v) in response.headers() {
-            info.add_field(k.as_str().as_bytes(), v.as_bytes());
-        }
-        info.send_response();
+    ) -> Result<T> {
+        let headers = response
+            .headers()
+            .len()
+            .try_into()
+            .context("too many response headers")?;
+        let headers_size = response
+            .headers()
+            .iter()
+            .map(|(k, v)| k.as_str().len() + v.len())
+            .sum::<usize>()
+            .try_into()
+            .context("response headers are too large")?;
 
-        response.into_body()
+        info.init_response(response.status().as_u16(), headers, headers_size)?;
+        for (k, v) in response.headers() {
+            info.add_field(k.as_str().as_bytes(), v.as_bytes())?;
+        }
+        info.send_response()?;
+
+        Ok(response.into_body())
     }
 
     async fn send_response_body(
@@ -434,7 +453,7 @@ impl GlobalState {
             };
             match frame.data_ref() {
                 Some(data) => {
-                    info.response_write(&data);
+                    info.response_write(data)?;
                 }
                 None => {
                     // TODO: what to do with trailers?
@@ -453,7 +472,7 @@ unsafe impl Send for NxtRequestInfo {}
 unsafe impl Sync for NxtRequestInfo {}
 
 impl NxtRequestInfo {
-    fn method(&self) -> &str {
+    fn method(&self) -> Result<&str> {
         unsafe {
             let raw = (*self.info).request;
             self.get_str(&(*raw).method, (*raw).method_length.into())
@@ -464,24 +483,24 @@ impl NxtRequestInfo {
         unsafe { (*(*self.info).request).tls != 0 }
     }
 
-    fn version(&self) -> &str {
+    fn version(&self) -> Result<&str> {
         unsafe {
             let raw = (*self.info).request;
             self.get_str(&(*raw).version, (*raw).version_length.into())
         }
     }
 
-    fn server_name(&self) -> &str {
+    fn server_name(&self) -> Result<&str> {
         unsafe {
             let raw = (*self.info).request;
-            self.get_str(&(*raw).server_name, (*raw).server_name_length.into())
+            self.get_str(&(*raw).server_name, (*raw).server_name_length)
         }
     }
 
-    fn target(&self) -> &str {
+    fn target(&self) -> Result<&str> {
         unsafe {
             let raw = (*self.info).request;
-            self.get_str(&(*raw).target, (*raw).target_length.into())
+            self.get_str(&(*raw).target, (*raw).target_length)
         }
     }
 
@@ -492,17 +511,22 @@ impl NxtRequestInfo {
         }
     }
 
-    fn fields(&self) -> impl Iterator<Item = (&str, &str)> {
+    fn fields(&self) -> Result<Vec<(&[u8], &[u8])>> {
         unsafe {
             let raw = (*self.info).request;
-            (0..(*raw).fields_count).map(move |i| {
-                let field = (*raw).fields.as_ptr().add(i as usize);
-                let name =
-                    self.get_str(&(*field).name, (*field).name_length.into());
+            let count = (*raw).fields_count as usize;
+            let mut fields = Vec::with_capacity(count);
+
+            for i in 0..count {
+                let field = (*raw).fields.as_ptr().add(i);
+                let name = self
+                    .get_slice(&(*field).name, (*field).name_length.into())?;
                 let value =
-                    self.get_str(&(*field).value, (*field).value_length.into());
-                (name, value)
-            })
+                    self.get_slice(&(*field).value, (*field).value_length)?;
+                fields.push((name, value));
+            }
+
+            Ok(fields)
         }
     }
 
@@ -526,7 +550,7 @@ impl NxtRequestInfo {
                     bail!("nxt_unit_request_read() failed: {amt}");
                 }
 
-                let amt: usize = amt.try_into().unwrap();
+                let amt = amt as usize;
                 if amt == 0 {
                     bail!("nxt_unit_request_read() returned unexpected EOF");
                 }
@@ -550,18 +574,27 @@ impl NxtRequestInfo {
         Ok(())
     }
 
-    fn response_write(&mut self, data: &[u8]) {
+    fn response_write(&mut self, data: &[u8]) -> Result<()> {
         unsafe {
             let rc = bindings::nxt_unit_response_write(
                 self.info,
                 data.as_ptr().cast(),
                 data.len(),
             );
-            assert_eq!(rc, 0);
+            if rc != 0 {
+                bail!("nxt_unit_response_write() failed: {rc}");
+            }
         }
+
+        Ok(())
     }
 
-    fn init_response(&mut self, status: u16, headers: u32, headers_size: u32) {
+    fn init_response(
+        &mut self,
+        status: u16,
+        headers: u32,
+        headers_size: u32,
+    ) -> Result<()> {
         unsafe {
             let rc = bindings::nxt_unit_response_init(
                 self.info,
@@ -569,28 +602,45 @@ impl NxtRequestInfo {
                 headers,
                 headers_size,
             );
-            assert_eq!(rc, 0);
+            if rc != 0 {
+                bail!("nxt_unit_response_init() failed: {rc}");
+            }
         }
+
+        Ok(())
     }
 
-    fn add_field(&mut self, key: &[u8], val: &[u8]) {
+    fn add_field(&mut self, key: &[u8], val: &[u8]) -> Result<()> {
+        let key_len =
+            key.len().try_into().context("header name is too long")?;
+        let val_len =
+            val.len().try_into().context("header value is too long")?;
+
         unsafe {
             let rc = bindings::nxt_unit_response_add_field(
                 self.info,
                 key.as_ptr().cast(),
-                key.len().try_into().unwrap(),
+                key_len,
                 val.as_ptr().cast(),
-                val.len().try_into().unwrap(),
+                val_len,
             );
-            assert_eq!(rc, 0);
+            if rc != 0 {
+                bail!("nxt_unit_response_add_field() failed: {rc}");
+            }
         }
+
+        Ok(())
     }
 
-    fn send_response(&mut self) {
+    fn send_response(&mut self) -> Result<()> {
         unsafe {
             let rc = bindings::nxt_unit_response_send(self.info);
-            assert_eq!(rc, 0);
+            if rc != 0 {
+                bail!("nxt_unit_response_send() failed: {rc}");
+            }
         }
+
+        Ok(())
     }
 
     fn request_done(self) {
@@ -602,14 +652,26 @@ impl NxtRequestInfo {
         }
     }
 
-    unsafe fn get_str(
+    fn get_slice(
         &self,
         ptr: &bindings::nxt_unit_sptr_t,
         len: u32,
-    ) -> &str {
-        let ptr = bindings::nxt_unit_sptr_get(ptr);
-        let slice = std::slice::from_raw_parts(ptr, len.try_into().unwrap());
-        std::str::from_utf8(slice).unwrap()
+    ) -> Result<&[u8]> {
+        let len: usize = len.try_into().context("string is too long")?;
+
+        unsafe {
+            let ptr = bindings::nxt_unit_sptr_get(ptr);
+            Ok(std::slice::from_raw_parts(ptr, len))
+        }
+    }
+
+    fn get_str(
+        &self,
+        ptr: &bindings::nxt_unit_sptr_t,
+        len: u32,
+    ) -> Result<&str> {
+        std::str::from_utf8(self.get_slice(ptr, len)?)
+            .context("request string is not valid UTF-8")
     }
 }
 
@@ -620,15 +682,21 @@ struct StoreState {
 }
 
 impl IoView for StoreState {
-    fn table(&mut self) -> &mut ResourceTable { &mut self.table }
+    fn table(&mut self) -> &mut ResourceTable {
+        &mut self.table
+    }
 }
 
 impl WasiView for StoreState {
-    fn ctx(&mut self) -> &mut WasiCtx { &mut self.ctx }
+    fn ctx(&mut self) -> &mut WasiCtx {
+        &mut self.ctx
+    }
 }
 
 impl WasiHttpView for StoreState {
-    fn ctx(&mut self) -> &mut WasiHttpCtx { &mut self.http }
+    fn ctx(&mut self) -> &mut WasiHttpCtx {
+        &mut self.http
+    }
 }
 
 impl StoreState {}
