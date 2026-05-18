@@ -261,6 +261,15 @@ def test_python_keepalive_body():
     assert resp['body'] == body, 'keep-alive 2'
 
 
+def test_python_application_streaming_timeout():
+    client.load('streaming_timeout', limits={"timeout": 2})
+
+    resp = client.get(raw_resp=True, read_timeout=5)
+
+    assert 'part1' in resp, 'first chunk'
+    assert 'part3' not in resp, 'timeout is not refreshed by stream chunks'
+
+
 def test_python_keepalive_reconfigure():
     client.load('mirror')
 
