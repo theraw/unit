@@ -4172,13 +4172,12 @@ nxt_router_response_ready_handler(nxt_task_t *task, nxt_port_recv_msg_t *msg,
 
         nxt_request_rpc_data_unlink(task, req_rpc_data);
 
-    } else {
-        if (app->timeout != 0) {
-            r->timer.handler = nxt_router_app_timeout;
-            r->timer_data = req_rpc_data;
-            nxt_timer_add(task->thread->engine, &r->timer, app->timeout);
-        }
     }
+
+    /*
+     * The application timeout is armed when the request is sent to the app.
+     * Do not refresh it on intermediate streaming response buffers.
+     */
 
     if (b == NULL) {
         return;
