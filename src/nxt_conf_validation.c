@@ -207,6 +207,8 @@ static nxt_int_t nxt_conf_vldt_target(nxt_conf_validation_t *vldt,
     nxt_str_t *name, nxt_conf_value_t *value);
 static nxt_int_t nxt_conf_vldt_argument(nxt_conf_validation_t *vldt,
     nxt_conf_value_t *value);
+static nxt_int_t nxt_conf_vldt_wasm_access_filesystem(
+    nxt_conf_validation_t *vldt, nxt_conf_value_t *value);
 static nxt_int_t nxt_conf_vldt_php(nxt_conf_validation_t *vldt,
     nxt_conf_value_t *value, void *data);
 static nxt_int_t nxt_conf_vldt_php_option(nxt_conf_validation_t *vldt,
@@ -1244,6 +1246,8 @@ static nxt_conf_vldt_object_t  nxt_conf_vldt_wasm_access_members[] = {
     {
         .name       = nxt_string("filesystem"),
         .type       = NXT_CONF_VLDT_ARRAY,
+        .validator  = nxt_conf_vldt_array_iterator,
+        .u.array    = nxt_conf_vldt_wasm_access_filesystem,
     },
 
     NXT_CONF_VLDT_END
@@ -3452,6 +3456,28 @@ nxt_conf_vldt_argument(nxt_conf_validation_t *vldt, nxt_conf_value_t *value)
 
     if (memchr(str.start, '\0', str.length) != NULL) {
         return nxt_conf_vldt_error(vldt, "The \"arguments\" array must not "
+                                   "contain strings with null character.");
+    }
+
+    return NXT_OK;
+}
+
+
+static nxt_int_t
+nxt_conf_vldt_wasm_access_filesystem(nxt_conf_validation_t *vldt,
+    nxt_conf_value_t *value)
+{
+    nxt_str_t  str;
+
+    if (nxt_conf_type(value) != NXT_CONF_STRING) {
+        return nxt_conf_vldt_error(vldt, "The \"filesystem\" array "
+                                   "must contain only string values.");
+    }
+
+    nxt_conf_get_string(value, &str);
+
+    if (memchr(str.start, '\0', str.length) != NULL) {
+        return nxt_conf_vldt_error(vldt, "The \"filesystem\" array must not "
                                    "contain strings with null character.");
     }
 
