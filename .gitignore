@@ -2,3 +2,16 @@
 Makefile
 *.pyc
 __pycache__/
+.pi
+.claude
+CLAUDE.md
+.agents
+AGENTS.md
+.codex
+.creds
+.config
+.cache
+.hosts
+.docker
+.incus
+*.jsonl

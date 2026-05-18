@@ -1,10 +1,11 @@
 # NGINX Unit
 
-[![Project Status: Unsupported – The project has reached a stable, usable state, but the author(s) have ceased all work on it. A new maintainer is desired.](https://www.repostatus.org/badges/latest/unsupported.svg)](https://www.repostatus.org/#unsupported)
+[![Project Status: Active.](https://www.repostatus.org/badges/latest/active.svg)](https://www.repostatus.org/#active)
 
-## Note: This repository has been archived. There will likely be no further development at this repo, and security vulnerabilities may be unaddressed.
-## The repo may be cloned and used under its current license.
-
+> Downstream fork maintained at [theraw/unit](https://github.com/theraw/unit) by
+> Julio S. (raweb.al). Upstream `nginx/unit` is archived; security and
+> behavior patches land here and ship as prebuilt packages on
+> [apt.julio.al](https://apt.julio.al).
 
 ## Universal Web App Server
 
@@ -28,14 +29,77 @@ achieve that with a complex, asynchronous, multithreading architecture
 comprising multiple processes to ensure security and robustness while getting
 the most out of today's computing platforms.
 
-## Installation
+## Installation — RAWeb prebuilt packages (apt.julio.al)
+
+Per-codename builds are published to a Nexus-hosted apt/yum repo, signed with
+the RAWeb GPG key. Every push is validated end-to-end (clean container, install
+from the repo, smoke-test `unitd` + control API) before the artifacts go live.
+
+| OS                | Codename | Repo                                                  |
+| ----------------- | -------- | ----------------------------------------------------- |
+| Debian 13         | trixie   | `https://apt.julio.al/repository/raweb-trixie/`       |
+| Ubuntu 24.04 LTS  | noble    | `https://apt.julio.al/repository/raweb-noble/`        |
+| Ubuntu 22.04 LTS  | jammy    | `https://apt.julio.al/repository/raweb-jammy/`        |
+| AlmaLinux 8       | el8      | `https://apt.julio.al/repository/raweb-alma8/`        |
+| AlmaLinux 9       | el9      | `https://apt.julio.al/repository/raweb-alma9/`        |
+| AlmaLinux 10      | el10     | `https://apt.julio.al/repository/raweb-alma10/`       |
+
+### Debian / Ubuntu
+
+Substitute `<codename>` for one of `trixie`, `noble`, `jammy`.
+
+```console
+$ sudo install -d /etc/apt/keyrings
+$ curl -fsSL https://apt.julio.al/repository/public/keys/raweb.asc \
+    | sudo gpg --dearmor -o /etc/apt/keyrings/raweb.gpg
+$ echo "deb [signed-by=/etc/apt/keyrings/raweb.gpg] \
+    https://apt.julio.al/repository/raweb-<codename>/ <codename> main" \
+    | sudo tee /etc/apt/sources.list.d/raweb-unit.list
+$ sudo apt update
+$ sudo apt install unit
+```
+
+### AlmaLinux / RHEL family
+
+Substitute `<N>` for one of `8`, `9`, `10`.
+
+```console
+$ sudo tee /etc/yum.repos.d/raweb-unit.repo >/dev/null <<EOF
+[raweb-unit]
+name=RAWeb Unit
+baseurl=https://apt.julio.al/repository/raweb-alma<N>/
+enabled=1
+gpgcheck=1
+gpgkey=https://apt.julio.al/repository/public/keys/raweb.asc
+EOF
+$ sudo dnf install -y unit
+```
+
+After install, `systemctl enable --now unit` then check it's up:
+
+```console
+$ sudo curl --unix-socket /var/run/control.unit.sock http://localhost/config/
+{
+    "listeners": {},
+    "routes": [],
+    "applications": {}
+}
+```
+
+### Building your own packages
+
+The publisher script lives at the repository's parent — see
+[`/srv/unit-build.sh`](../unit-build.sh). It spins up a clean incus container
+per codename, builds inside it (so unitd is linked against that distro's
+libssl/libpcre2 SONAME), signs with the RAWeb GPG key, and uploads to the
+matching Nexus repo. `bash /srv/unit-build.sh help` shows the full target
+list.
+
+## Other installation methods
 
 ### macOS
 
-Run the following command to install both `unitd` (the Unit daemon) and
-`unitctl` (the control tool).
-
-``` console
+```console
 $ brew install nginx/unit/unit
 ```
 
@@ -44,7 +108,7 @@ For details and available language packages, see the
 
 ### Docker
 
-``` console
+```console
 $ docker pull unit:<TAG>
 $ mkdir /tmp/unit-control # customize as needed.
 $ docker run -d \
@@ -57,34 +121,9 @@ $ docker run -d \
 For a description of image tags, see the
 [docs](https://unit.nginx.org/installation/#docker-images).
 
-WARNING: The latest image tag may not provide support for specific languages
-modules, *do* check the available image tags from the link above before
-pulling your image.
-
 Your current working directory will now be mounted to the Unit image at `/www`.
 You can reach its socket at `/tmp/unit-control/control.unit.sock` assuming no
 further customizations have been made.
-
-### Debian, Ubuntu, Amazon Linux, Fedora, Red Hat
-
-This helper script configures the correct package repositories for system.
-``` console
-$ wget https://raw.githubusercontent.com/nginx/unit/master/tools/setup-unit && chmod +x setup-unit
-# ./setup-unit repo-config
-```
-
-Debian derivatives:
-``` console
-# apt install unit
-```
-
-Fedora derivatives:
-``` console
-# yum install unit
-```
-
-For details and available language packages, see the
-[docs](https://unit.nginx.org/installation/#official-packages).
 
 ## Getting Started with `unitctl`
 
