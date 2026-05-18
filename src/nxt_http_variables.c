@@ -14,6 +14,8 @@ static nxt_int_t nxt_http_var_request_time(nxt_task_t *task, nxt_str_t *str,
     void *ctx, void *data);
 static nxt_int_t nxt_http_var_method(nxt_task_t *task, nxt_str_t *str,
     void *ctx, void *data);
+static nxt_int_t nxt_http_var_app(nxt_task_t *task, nxt_str_t *str,
+    void *ctx, void *data);
 static nxt_int_t nxt_http_var_request_uri(nxt_task_t *task, nxt_str_t *str,
     void *ctx, void *data);
 static nxt_int_t nxt_http_var_uri(nxt_task_t *task, nxt_str_t *str, void *ctx,
@@ -21,6 +23,10 @@ static nxt_int_t nxt_http_var_uri(nxt_task_t *task, nxt_str_t *str, void *ctx,
 static nxt_int_t nxt_http_var_host(nxt_task_t *task, nxt_str_t *str, void *ctx,
     void *data);
 static nxt_int_t nxt_http_var_remote_addr(nxt_task_t *task, nxt_str_t *str,
+    void *ctx, void *data);
+static nxt_int_t nxt_http_var_server_addr(nxt_task_t *task, nxt_str_t *str,
+    void *ctx, void *data);
+static nxt_int_t nxt_http_var_server_port(nxt_task_t *task, nxt_str_t *str,
     void *ctx, void *data);
 static nxt_int_t nxt_http_var_time_local(nxt_task_t *task, nxt_str_t *str,
     void *ctx, void *data);
@@ -68,6 +74,14 @@ static nxt_var_decl_t  nxt_http_vars[] = {
         .handler = nxt_http_var_method,
         .cacheable = 1,
     }, {
+        .name = nxt_string("app"),
+        .handler = nxt_http_var_app,
+        .cacheable = 1,
+    }, {
+        .name = nxt_string("application"),
+        .handler = nxt_http_var_app,
+        .cacheable = 1,
+    }, {
         .name = nxt_string("request_uri"),
         .handler = nxt_http_var_request_uri,
         .cacheable = 1,
@@ -82,6 +96,14 @@ static nxt_var_decl_t  nxt_http_vars[] = {
     }, {
         .name = nxt_string("remote_addr"),
         .handler = nxt_http_var_remote_addr,
+        .cacheable = 1,
+    }, {
+        .name = nxt_string("server_addr"),
+        .handler = nxt_http_var_server_addr,
+        .cacheable = 1,
+    }, {
+        .name = nxt_string("server_port"),
+        .handler = nxt_http_var_server_port,
         .cacheable = 1,
     }, {
         .name = nxt_string("time_local"),
@@ -275,6 +297,19 @@ nxt_http_var_method(nxt_task_t *task, nxt_str_t *str, void *ctx, void *data)
 
 
 static nxt_int_t
+nxt_http_var_app(nxt_task_t *task, nxt_str_t *str, void *ctx, void *data)
+{
+    nxt_http_request_t  *r;
+
+    r = ctx;
+
+    *str = r->app_name;
+
+    return NXT_OK;
+}
+
+
+static nxt_int_t
 nxt_http_var_request_uri(nxt_task_t *task, nxt_str_t *str, void *ctx,
     void *data)
 {
@@ -324,6 +359,56 @@ nxt_http_var_remote_addr(nxt_task_t *task, nxt_str_t *str, void *ctx,
 
     str->length = r->remote->address_length;
     str->start = nxt_sockaddr_address(r->remote);
+
+    return NXT_OK;
+}
+
+
+static nxt_int_t
+nxt_http_var_server_addr(nxt_task_t *task, nxt_str_t *str, void *ctx,
+    void *data)
+{
+    nxt_http_request_t  *r;
+
+    r = ctx;
+
+    if (r->local == NULL && r->proto.any != NULL) {
+        nxt_http_proto[r->protocol].local_addr(task, r);
+    }
+
+    if (nxt_slow_path(r->local == NULL)) {
+        str->length = 0;
+        str->start = (u_char *) "";
+        return NXT_OK;
+    }
+
+    str->length = r->local->address_length;
+    str->start = nxt_sockaddr_address(r->local);
+
+    return NXT_OK;
+}
+
+
+static nxt_int_t
+nxt_http_var_server_port(nxt_task_t *task, nxt_str_t *str, void *ctx,
+    void *data)
+{
+    nxt_http_request_t  *r;
+
+    r = ctx;
+
+    if (r->local == NULL && r->proto.any != NULL) {
+        nxt_http_proto[r->protocol].local_addr(task, r);
+    }
+
+    if (nxt_slow_path(r->local == NULL)) {
+        str->length = 0;
+        str->start = (u_char *) "";
+        return NXT_OK;
+    }
+
+    str->length = nxt_sockaddr_port_length(r->local);
+    str->start = nxt_sockaddr_port(r->local);
 
     return NXT_OK;
 }
