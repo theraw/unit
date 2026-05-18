@@ -283,6 +283,22 @@ def test_variables_remote_addr(search_in_file, wait_for_record):
     assert wait_for_record(reg, 'access.log') is not None
 
 
+def test_variables_server_addr_port(search_in_file, wait_for_record):
+    set_format('$server_addr:$server_port')
+
+    assert client.get()['status'] == 200
+    assert wait_for_record(r'^127\.0\.0\.1:8080$', 'access.log') is not None
+
+    assert 'success' in client.conf(
+        {"[::1]:8081": {"pass": "routes"}}, 'listeners'
+    )
+
+    reg = r'^::1:8081$'
+    assert search_in_file(reg, 'access.log') is None
+    assert client.get(sock_type='ipv6', port=8081)['status'] == 200
+    assert wait_for_record(reg, 'access.log') is not None
+
+
 def test_variables_time_local(
     date_to_sec_epoch, search_in_file, wait_for_record
 ):
@@ -606,10 +622,10 @@ def test_variables_response_header_application(require, wait_for_record):
 
     client_python.load('chunked')
 
-    set_format('$uri@$response_header_transfer_encoding')
+    set_format('$app@$application@$uri@$response_header_transfer_encoding')
 
     assert client_python.get(url='/1')['status'] == 200
-    assert wait_for_record(r'/1@chunked', 'access.log') is not None
+    assert wait_for_record(r'chunked@chunked@/1@chunked', 'access.log') is not None
 
 
 def test_variables_invalid(temp_dir):
