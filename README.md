@@ -46,39 +46,45 @@ from the repo, smoke-test `unitd` + control API) before the artifacts go live.
 
 ### Debian / Ubuntu
 
-Substitute `<codename>` for one of `trixie`, `noble`, `jammy`.
+Codename is auto-detected from `/etc/os-release` — copy/paste the block as-is.
 
-```console
-$ sudo install -d /etc/apt/keyrings
-$ curl -fsSL https://apt.julio.al/repository/public/keys/raweb.asc \
-    | sudo gpg --dearmor -o /etc/apt/keyrings/raweb.gpg
-$ echo "deb [signed-by=/etc/apt/keyrings/raweb.gpg] \
-    https://apt.julio.al/repository/raweb-<codename>/ <codename> main" \
-    | sudo tee /etc/apt/sources.list.d/raweb-unit.list
-$ sudo apt update
-$ sudo apt install unit
+```bash
+sudo install -d /etc/apt/keyrings
+curl -fsSL https://apt.julio.al/repository/public/keys/raweb.asc \
+  | sudo gpg --dearmor -o /etc/apt/keyrings/raweb.gpg
+. /etc/os-release
+echo "deb [signed-by=/etc/apt/keyrings/raweb.gpg] https://apt.julio.al/repository/raweb-${VERSION_CODENAME}/ ${VERSION_CODENAME} main" \
+  | sudo tee /etc/apt/sources.list.d/raweb-unit.list
+sudo apt update && sudo apt install -y unit
 ```
 
 ### AlmaLinux / RHEL family
 
-Substitute `<N>` for one of `8`, `9`, `10`.
+EL major version is auto-detected — copy/paste the block as-is.
 
-```console
-$ sudo tee /etc/yum.repos.d/raweb-unit.repo >/dev/null <<EOF
+```bash
+. /etc/os-release
+sudo tee /etc/yum.repos.d/raweb-unit.repo >/dev/null <<EOF
 [raweb-unit]
 name=RAWeb Unit
-baseurl=https://apt.julio.al/repository/raweb-alma<N>/
+baseurl=https://apt.julio.al/repository/raweb-alma${VERSION_ID%%.*}/
 enabled=1
 gpgcheck=1
 gpgkey=https://apt.julio.al/repository/public/keys/raweb.asc
 EOF
-$ sudo dnf install -y unit
+sudo dnf install -y unit
 ```
 
-After install, `systemctl enable --now unit` then check it's up:
+Then enable and check it's up:
 
-```console
-$ sudo curl --unix-socket /var/run/control.unit.sock http://localhost/config/
+```bash
+sudo systemctl enable --now unit
+sudo curl --unix-socket /var/run/control.unit.sock http://localhost/config/
+```
+
+Expected output:
+
+```json
 {
     "listeners": {},
     "routes": [],
