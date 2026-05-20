@@ -50,10 +50,10 @@ Codename is auto-detected from `/etc/os-release` — copy/paste the block as-is.
 
 ```bash
 sudo install -d /etc/apt/keyrings
-curl -fsSL https://apt.julio.al/repository/public/keys/raweb.asc \
-  | sudo gpg --dearmor -o /etc/apt/keyrings/raweb.gpg
+sudo curl -fsSL https://apt.julio.al/repository/public/keys/raweb.asc \
+  -o /etc/apt/keyrings/raweb.asc
 . /etc/os-release
-echo "deb [signed-by=/etc/apt/keyrings/raweb.gpg] https://apt.julio.al/repository/raweb-${VERSION_CODENAME}/ ${VERSION_CODENAME} main" \
+echo "deb [signed-by=/etc/apt/keyrings/raweb.asc] https://apt.julio.al/repository/raweb-${VERSION_CODENAME}/ ${VERSION_CODENAME} main" \
   | sudo tee /etc/apt/sources.list.d/raweb-unit.list
 sudo apt update && sudo apt install -y unit
 ```
@@ -63,11 +63,11 @@ sudo apt update && sudo apt install -y unit
 EL major version is auto-detected — copy/paste the block as-is.
 
 ```bash
-. /etc/os-release
+sudo rpm --import https://apt.julio.al/repository/public/keys/raweb.asc
 sudo tee /etc/yum.repos.d/raweb-unit.repo >/dev/null <<EOF
 [raweb-unit]
 name=RAWeb Unit
-baseurl=https://apt.julio.al/repository/raweb-alma${VERSION_ID%%.*}/
+baseurl=https://apt.julio.al/repository/raweb-alma\$(rpm -E %{rhel})/
 enabled=1
 gpgcheck=1
 gpgkey=https://apt.julio.al/repository/public/keys/raweb.asc
